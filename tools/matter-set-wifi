@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Give the Matter server your Wi-Fi name + password so it can BLE-commission Wi-Fi Matter devices (Govee bulbs).
+Run in an interactive terminal: python3 tools/matter-set-wifi
+The password is typed hidden, sent once to HA's local websocket (localhost:8123) and never written to disk by this script."""
+import socket, os, json, base64, struct, getpass, sys
+tok = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".secrets", "ha_token")).read().strip()
+ssid = input("Wi-Fi network name (2.4 GHz capable): ").strip()
+pw = getpass.getpass("Wi-Fi password (hidden): ")
+if not ssid or not pw:
+    sys.exit("need both")
+s = socket.create_connection(("127.0.0.1", 8123), timeout=30)
+key = base64.b64encode(os.urandom(16)).decode()
+s.sendall(f"GET /api/websocket HTTP/1.1\r\nHost: 127.0.0.1:8123\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
+buf = b""
+while b"\r\n\r\n" not in buf: buf += s.recv(4096)
+buf = buf.split(b"\r\n\r\n", 1)[1]
+def rd(n):
+    global buf
+    while len(buf) < n: buf += s.recv(65536)
+    o, buf = buf[:n], buf[n:]; return o
+def recv():
+    data = b""
+    while True:
+        b1, b2 = rd(2); fin = b1 & 0x80; ln = b2 & 0x7f
+        if ln == 126: ln = struct.unpack(">H", rd(2))[0]
+        elif ln == 127: ln = struct.unpack(">Q", rd(8))[0]
+        data += rd(ln)
+        if fin: return json.loads(data)
+def send(o):
+    p = json.dumps(o).encode(); m = os.urandom(4); h = bytes([0x81])
+    if len(p) < 126: h += bytes([0x80 | len(p)])
+    else: h += bytes([0x80 | 126]) + struct.pack(">H", len(p))
+    s.sendall(h + m + bytes(c ^ m[i % 4] for i, c in enumerate(p)))
+recv(); send({"type": "auth", "access_token": tok})
+assert recv()["type"] == "auth_ok", "HA auth failed"
+send({"id": 1, "type": "matter/set_wifi_credentials", "network_name": ssid, "password": pw})
+while True:
+    m = recv()
+    if m.get("id") == 1:
+        print("OK, credentials set" if m["success"] else f"failed: {m.get('error')}")
+        break

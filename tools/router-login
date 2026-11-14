@@ -1,0 +1,8 @@
+#!/bin/bash
+# Saves the ASUS router admin login to .secrets/asus_router.env (mode 600) without echoing the password.
+IFS= read -r -p "Router admin username [admin]: " U; U=${U:-admin}
+IFS= read -rs -p "Router admin password: " P; echo
+[ -t 0 ] && [ -n "$P" ] || { echo "No password entered (run this in an interactive terminal)."; exit 1; }
+umask 077
+printf 'ASUS_ROUTER_USER=%s\nASUS_ROUTER_PASSWORD=%s\n' "$U" "$P" > "$HOME/homeassistant/.secrets/asus_router.env"
+echo "saved"

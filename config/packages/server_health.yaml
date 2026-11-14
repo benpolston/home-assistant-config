@@ -1,0 +1,69 @@
+# Jellyfin / host health sensors used by the server watchdog and dashboards.
+# Read-only checks — nothing here talks to Jellyfin except GET /health.
+
+binary_sensor:
+  - platform: rest
+    name: Jellyfin Web
+    unique_id: jellyfin_web_health
+    resource: http://127.0.0.1:8096/health
+    device_class: connectivity
+    value_template: "{{ value == 'Healthy' }}"
+    scan_interval: 60
+    timeout: 10
+
+template:
+  - sensor:
+      # playing / paused / idle — state of the Jellyfin session on the living room TV.
+      # Matches Jellyfin media_player entities whose friendly/device name contains
+      # input_text.movie_mode_jellyfin_device (currently "samsung" → "Samsung Smart TV").
+      # Iterates states.media_player (not integration_entities alone) so HA re-renders this
+      # whenever any media player changes, including Jellyfin sessions that appear later.
+      - name: Living Room Jellyfin State
+        unique_id: living_room_jellyfin_state
+        icon: mdi:jellyfish
+        state: >
+          {% set needle = states('input_text.movie_mode_jellyfin_device') | lower %}
+          {% set jf = integration_entities('jellyfin') %}
+          {% set ns = namespace(st='idle') %}
+          {% if needle not in ['', 'unknown', 'unavailable'] %}
+            {% for p in states.media_player | selectattr('entity_id', 'in', jf) %}
+              {% set did = device_id(p.entity_id) %}
+              {% set dname = ((device_attr(did, 'name') if did else '') or '') | lower %}
+              {% if needle in dname or needle in (p.name or '') | lower %}
+                {% if p.state == 'playing' %}{% set ns.st = 'playing' %}
+                {% elif p.state == 'paused' and ns.st != 'playing' %}{% set ns.st = 'paused' %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          {{ ns.st }}
+        attributes:
+          source_entity: >
+            {% set needle = states('input_text.movie_mode_jellyfin_device') | lower %}
+            {% set jf = integration_entities('jellyfin') %}
+            {% set ns = namespace(src='') %}
+            {% for p in states.media_player | selectattr('entity_id', 'in', jf) %}
+              {% if needle and needle in (p.name or '') | lower and p.state in ['playing', 'paused'] %}
+                {% set ns.src = p.entity_id %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.src }}
+
+      # Title of whatever any Jellyfin client is playing (for dashboards)
+      - name: Jellyfin Now Playing
+        unique_id: jellyfin_now_playing
+        icon: mdi:play-circle-outline
+        state: >
+          {% set jf = integration_entities('jellyfin') %}
+          {% set p = states.media_player | selectattr('entity_id', 'in', jf)
+                     | selectattr('state', 'eq', 'playing') | list %}
+          {% if p | count == 0 %}Nothing playing{% else %}
+            {% set e = p | first %}
+            {% set series = e.attributes.get('media_series_title') %}
+            {{ ((series ~ ' – ') if series else '') ~ (e.attributes.media_title or 'Playing') }}
+          {% endif %}
+        attributes:
+          sessions_playing: >
+            {% set jf = integration_entities('jellyfin') %}
+            {{ states.media_player | selectattr('entity_id', 'in', jf)
+               | selectattr('state', 'eq', 'playing') | list | count }}

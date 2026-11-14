@@ -1,0 +1,53 @@
+# Seerr request notifications (added 2026-11-08).
+# The Seerr integration registers HA's webhook in Seerr (Settings > Notifications > Webhook)
+# and fires event.seerr_last_media_event with the requester's username/email.
+#
+# Split with ntfy (Seerr > Settings > Notifications > ntfy): ntfy keeps "Processing failed" and
+# "Issue reported" (admin jobs, admin only). HA handles "Available" and "Auto-approved":
+#   - Admin (resident 1): every Available / Auto-approved, with who asked.
+#   - Resident 2: Available only, and only for their own requests.
+# Other Seerr users aren't in HA, so they get nothing new.
+# Seerr usernames below are placeholders.
+
+automation:
+  - id: seerr_request_notifications
+    alias: Seerr - request notifications
+    mode: queued
+    max: 20
+    triggers:
+      - trigger: state
+        entity_id: event.seerr_last_media_event
+        not_from: unavailable
+        not_to: unavailable
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.from_state is not none
+             and trigger.to_state.attributes.event_type in ['available', 'auto_approved'] }}
+    variables:
+      ev: "{{ trigger.to_state.attributes.event_type }}"
+      title: "{{ trigger.to_state.attributes.subject | default('A request', true) }}"
+      req: "{{ trigger.to_state.attributes.request | default({}, true) }}"
+      who: >-
+        {{ (req.requested_by_username | default('', true)) or (req.requested_by_email | default('', true)) }}
+      who_key: >-
+        {{ ((req.requested_by_username | default('', true)) ~ '|' ~ (req.requested_by_email | default('', true))) | lower }}
+      is_admin: "{{ 'resident_1' in who_key.split('|') }}"
+      is_resident_2: "{{ 'resident_2' in who_key.split('|') }}"
+      picture: "{{ trigger.to_state.attributes.entity_picture | default('', true) }}"
+      push_data: >-
+        {{ dict(group='seerr', image=picture) if picture else dict(group='seerr') }}
+    actions:
+      - action: notify.mobile_app_resident_1_phone
+        data:
+          title: "{{ '🎬 Ready to watch' if ev == 'available' else '📥 Request added' }}"
+          message: >-
+            {{ title }}{{ '' if is_admin or not who else ' · requested by ' ~ who }}
+          data: "{{ push_data }}"
+      - if: "{{ ev == 'available' and is_resident_2 }}"
+        then:
+          - action: notify.mobile_app_resident_2_phone
+            data:
+              title: 🎬 Your request is ready
+              message: "{{ title }} is now on Jellyfin."
+              data: "{{ push_data }}"

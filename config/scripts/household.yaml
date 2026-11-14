@@ -1,0 +1,219 @@
+# YAML-managed scripts. Planned entity IDs: see packages/lights.yaml.
+# TVs: media_player.samsung_tv (samsungtv, after pairing), media_player.vizio_tv (vizio, bedroom, after PIN pairing). Other TVs on the network aren't ours and are deliberately ignored.
+
+goodnight:
+  alias: Goodnight
+  icon: mdi:weather-night
+  description: >-
+    Living room night lights (Lights 1+4 off, 2+3 purple 1%, ceiling strips red 10%, TV strip off),
+    office light off, fan ON, heater off, gaming PC to sleep (only if HASS.Agent is present).
+    Does NOT turn off either TV.
+  mode: restart
+  sequence:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: [input_boolean.movie_mode_active, input_boolean.night_feed]
+    # Tells Jellyfin movie mode to leave the lights alone until morning / the next living-room look
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.goodnight_active
+    # Plain power-on first for the ceiling strips only (Govee ignores color/brightness sent to an off strip).
+    # NOT for the four ceiling bulbs: they are Matter since 2026-11-12, apply color from off, and a separate
+    # power-on makes them race the scene (the bulb's own turn-on can land after the scene and overwrite it).
+    - action: light.turn_on
+      target:
+        entity_id: [light.living_room_ceiling_strip_1, light.living_room_ceiling_strip_2]
+      continue_on_error: true
+    - delay: "00:00:02"
+    - action: scene.turn_on
+      target:
+        entity_id: scene.goodnight_lights
+      continue_on_error: true
+    # Explicit offs (a scene skips lights HA thinks are already off; Govee status can be stale)
+    - action: light.turn_off
+      target:
+        entity_id: [light.living_room_gu10_1, light.living_room_gu10_4, light.living_room_tv_strip,
+                    light.office_bulb]
+      continue_on_error: true
+    - action: switch.turn_on
+      target:
+        entity_id: switch.living_room_fan
+      continue_on_error: true
+    - action: switch.turn_off
+      target:
+        entity_id: switch.living_room_heater
+      continue_on_error: true
+    # TVs deliberately left alone (someone may still be watching).
+    - action: script.gaming_pc_sleep
+
+tvs_off:
+  alias: TVs off
+  icon: mdi:television-off
+  mode: single
+  sequence:
+    - repeat:
+        for_each: [media_player.samsung_tv, media_player.vizio_tv]
+        sequence:
+          - if: "{{ states(repeat.item) not in ['off', 'unavailable', 'unknown', 'standby'] }}"
+            then:
+              - action: media_player.turn_off
+                target:
+                  entity_id: "{{ repeat.item }}"
+                continue_on_error: true
+
+gaming_pc_on:
+  alias: Gaming PC on
+  icon: mdi:desktop-tower
+  description: Sends a Wake-on-LAN magic packet to the gaming PC.
+  mode: single
+  sequence:
+    - action: wake_on_lan.send_magic_packet
+      data:
+        mac: !secret gaming_pc_mac
+        broadcast_address: !secret lan_broadcast_address
+        broadcast_port: 9
+
+gaming_pc_sleep:
+  alias: Gaming PC sleep
+  icon: mdi:power-sleep
+  description: >-
+    Puts the gaming PC to sleep via HASS.Agent's MQTT button (button.gaming_pc_sleep, see
+    the HASS.Agent docs). Silently skips if HASS.Agent isn't installed or the PC is offline.
+  mode: single
+  sequence:
+    - if:
+        - condition: template
+          value_template: >-
+            {{ states.button.gaming_pc_sleep is not none
+               and states('button.gaming_pc_sleep') != 'unavailable'
+               and is_state('binary_sensor.gaming_pc_online', 'on') }}
+      then:
+        - action: button.press
+          target:
+            entity_id: button.gaming_pc_sleep
+
+notify_phones:
+  alias: Notify phones
+  icon: mdi:cellphone-message
+  description: Push to every service listed in input_text.notify_targets (the iPhones).
+  mode: parallel
+  fields:
+    title: {description: Title, example: Home}
+    message: {description: Message, required: true, example: Hello}
+    data:
+      description: "Extra notification data such as actions or push settings"
+      example: "{}"
+  sequence:
+    - repeat:
+        for_each: >-
+          {{ states('input_text.notify_targets').split(',') | map('trim')
+             | reject('in', ['', 'unknown', 'unavailable']) | list }}
+        sequence:
+          - action: "notify.{{ repeat.item }}"
+            continue_on_error: true
+            data:
+              title: "{{ title | default('Home') }}"
+              message: "{{ message }}"
+              data: "{{ data | default({}) }}"
+
+announce_echos:
+  alias: Announce on Echos
+  icon: mdi:bullhorn
+  description: >-
+    Announces on every Echo via the core Alexa Devices integration (no-op until it's set up).
+    Skipped during quiet hours (input_datetime.quiet_hours_start/end) unless force is true.
+  mode: parallel
+  fields:
+    message: {description: What to say, required: true, example: Test announcement}
+    force: {description: Ignore quiet hours, example: false}
+  sequence:
+    - variables:
+        targets: >-
+          {{ integration_entities('alexa_devices') | select('match', 'notify\..*announce')
+             | reject('search', 'everywhere') | list }}
+        quiet: "{% set s = today_at(states('input_datetime.quiet_hours_start')) %}{% set e = today_at(states('input_datetime.quiet_hours_end')) %}{{ (now() >= s or now() < e) if s > e else (s <= now() < e) }}"
+    - if: "{{ targets | count > 0 and (force | default(false) | bool or not quiet) }}"
+      then:
+        - action: notify.send_message
+          target:
+            entity_id: "{{ targets }}"
+          data:
+            message: "{{ message }}"
+
+notify_everyone:
+  alias: Notify everyone
+  icon: mdi:alert-circle
+  mode: parallel
+  fields:
+    title: {example: Server alert}
+    message: {required: true, example: Something happened}
+  sequence:
+    - action: script.notify_phones
+      data:
+        title: "{{ title | default('Home') }}"
+        message: "{{ message }}"
+    - action: script.announce_echos
+      data:
+        message: "{{ message }}"
+
+night_feed_on:
+  alias: Night feed
+  icon: mdi:baby-bottle-outline
+  description: Bedroom bulb at ~1% deep amber-red for 45 minutes (see automation night_feed_mode).
+  mode: single
+  sequence:
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.night_feed
+
+govee_ensure_power:
+  alias: Govee – make sure lights are on (with retries)
+  icon: mdi:lightbulb-auto
+  description: >-
+    Sends a plain power-on to any of the given lights that are still off, then waits for Govee to
+    confirm (govee2mqtt re-polls ~5 s after a command). Up to 3 tries. Needed because Govee ignores
+    brightness/color sent to an off bulb, and govee2mqtt doesn't retry failed cloud requests
+    (e.g. a momentary DNS failure). Callers re-apply brightness/color afterwards.
+  mode: parallel
+  fields:
+    entities:
+      description: Light entity IDs that should end up on
+      required: true
+      example: "[light.living_room_gu10_1]"
+  sequence:
+    - repeat:
+        sequence:
+          - variables:
+              still_off: "{{ entities | select('is_state', 'off') | list }}"
+          - if: "{{ still_off | count > 0 }}"
+            then:
+              - action: light.turn_on
+                target:
+                  entity_id: "{{ still_off }}"
+              - delay: "00:00:07"
+        until:
+          - condition: template
+            value_template: "{{ entities | select('is_state', 'off') | list | count == 0 or repeat.index >= 3 }}"
+
+good_morning:
+  alias: Good Morning
+  icon: mdi:weather-sunny
+  description: >-
+    Living Room Lights 1-4 daylight white 40%, ceiling strips blue 50%, fan off.
+  mode: restart
+  sequence:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.living_room_fan
+      continue_on_error: true
+    # Plain power-on first for the ceiling strips only (Govee ignores color/brightness sent to an off strip), then
+    # the look. Not for the four Matter bulbs: a separate power-on made Lights 1 and 4 jump to 100% about 2 s later,
+    # after the scene had already run, so they ended at 100% instead of 40%.
+    - action: light.turn_on
+      target:
+        entity_id: [light.living_room_ceiling_strip_1, light.living_room_ceiling_strip_2]
+      continue_on_error: true
+    - delay: "00:00:02"
+    - action: scene.turn_on
+      target:
+        entity_id: scene.good_morning_lights

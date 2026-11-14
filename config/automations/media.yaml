@@ -1,0 +1,19 @@
+# Media / TV automations.
+
+# The samsungtv integration only offers media_player.turn_on when an automation uses its
+# "turn_on" device trigger. Without this, turning media_player.samsung_tv on (tablet tile,
+# Assist, scripts) fails with "does not support action media_player.turn_on".
+# Wake-on-LAN needs the TV setting "Power On with Mobile" (Settings > Connection > Network >
+# Expert Settings) to stay ON. MAC/IP come from the router reservation / samsungtv config entry.
+- id: samsung_tv_turn_on_wol
+  alias: Living room TV - turn on via Wake-on-LAN
+  description: Lets HA turn the Samsung TV on (it only supports turn-off natively).
+  mode: single
+  triggers:
+    - trigger: samsungtv.turn_on
+      entity_id: media_player.samsung_tv
+  actions:
+    - action: wake_on_lan.send_magic_packet
+      data:
+        mac: !secret samsung_tv_mac
+        broadcast_address: !secret lan_broadcast_address

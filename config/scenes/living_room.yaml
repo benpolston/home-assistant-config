@@ -1,0 +1,117 @@
+# Static scenes. The TV strip is deliberately NOT in any scene: it stays in Govee "Video mode"
+# (camera sync), which the Govee API can't re-enable, and any HA color/white command would knock it out.
+# Scenes with unavailable members still activate whatever exists.
+
+- id: movie_mode
+  name: Movie Mode
+  icon: mdi:movie-roll
+  # The TV strip gets the Govee snapshot
+  # "TV Video Mode" via automation movie_scene_tv_video_mode (not settable as a scene state).
+  entities:
+    light.living_room_gu10_1:
+      state: "off"
+    light.living_room_gu10_4:
+      state: "off"
+    light.living_room_gu10_2: &gu10_movie
+      state: "on"
+      brightness: 51          # 20%
+      color_temp_kelvin: 2700 # warm white
+    light.living_room_gu10_3: *gu10_movie
+    light.living_room_ceiling_strip_1: &strip_movie
+      state: "on"
+      brightness: 128         # 50%
+      rgb_color: [255, 0, 0]  # red
+    light.living_room_ceiling_strip_2: *strip_movie
+
+- id: gaming_mode
+  name: Gaming Mode
+  icon: mdi:controller
+  # Lights 1+4 off, 2+3 warm white 25%, ceiling strips green 50%.
+  # TV strip gets the Govee snapshot "TV Video Mode" via automation movie_scene_tv_video_mode.
+  entities:
+    light.living_room_gu10_1:
+      state: "off"
+    light.living_room_gu10_4:
+      state: "off"
+    light.living_room_gu10_2: &gu10_game
+      state: "on"
+      brightness: 64           # 25%
+      color_temp_kelvin: 2700  # warm white
+    light.living_room_gu10_3: *gu10_game
+    light.living_room_ceiling_strip_1: &strip_game
+      state: "on"
+      brightness: 128          # 50%
+      rgb_color: [0, 255, 0]   # green
+    light.living_room_ceiling_strip_2: *strip_game
+- id: living_room_bright
+  name: Living Room Bright
+  icon: mdi:lightbulb-on
+  entities:
+    light.living_room_gu10_1: &gu10_bright
+      state: "on"
+      brightness: 255
+      color_temp_kelvin: 3500
+    light.living_room_gu10_2: *gu10_bright
+    light.living_room_gu10_3: *gu10_bright
+    light.living_room_gu10_4: *gu10_bright
+    light.living_room_ceiling_strip:
+      state: "on"
+      brightness: 200
+      color_temp_kelvin: 3000
+
+- id: living_room_relax
+  name: Living Room Relax
+  icon: mdi:sofa
+  # Lights 1-4 warm white 20%, ceiling strips red 50%. TV strip untouched.
+  entities:
+    light.living_room_gu10_1: &gu10_relax
+      state: "on"
+      brightness: 51           # 20%
+      color_temp_kelvin: 2700  # warm white
+    light.living_room_gu10_2: *gu10_relax
+    light.living_room_gu10_3: *gu10_relax
+    light.living_room_gu10_4: *gu10_relax
+    light.living_room_ceiling_strip_1: &strip_relax
+      state: "on"
+      brightness: 128          # 50%
+      rgb_color: [255, 0, 0]   # red
+    light.living_room_ceiling_strip_2: *strip_relax
+- id: goodnight_lights
+  name: Goodnight Lights
+  icon: mdi:weather-night
+  # Used by script.goodnight. Lights 1+4 off, 2+3 purple 1%, ceiling strips red 10%, TV strip off.
+  entities:
+    light.living_room_gu10_1:
+      state: "off"
+    light.living_room_gu10_4:
+      state: "off"
+    light.living_room_gu10_2: &gu10_night
+      state: "on"
+      brightness: 3            # 1%
+      rgb_color: [128, 0, 255] # purple
+    light.living_room_gu10_3: *gu10_night
+    light.living_room_ceiling_strip_1: &strip_night
+      state: "on"
+      brightness: 26           # 10%
+      rgb_color: [255, 0, 0]   # red
+    light.living_room_ceiling_strip_2: *strip_night
+    light.living_room_tv_strip:
+      state: "off"
+
+- id: good_morning_lights
+  name: Good Morning Lights
+  icon: mdi:weather-sunny
+  # Used by script.good_morning. Lights 1-4 daylight white 40%, ceiling strips blue 50%.
+  entities:
+    light.living_room_gu10_1: &gu10_morning
+      state: "on"
+      brightness: 102          # 40%
+      color_temp_kelvin: 6500  # daylight
+    light.living_room_gu10_2: *gu10_morning
+    light.living_room_gu10_3: *gu10_morning
+    light.living_room_gu10_4: *gu10_morning
+    light.living_room_ceiling_strip_1: &strip_morning
+      state: "on"
+      brightness: 128          # 50%
+      rgb_color: [0, 0, 255]   # blue
+    light.living_room_ceiling_strip_2: *strip_morning

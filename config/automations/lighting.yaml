@@ -1,0 +1,403 @@
+# Lighting automations.
+# ⚠ Automations marked DISABLED-UNTIL were switched off after the first load because the
+#   entities they depend on don't exist yet. Turn them on in Settings > Automations
+#   once the named prerequisite is done. Their on/off state survives restarts.
+
+# ENABLED 2026-11-07. Jellyfin session on the living room TV = media_player.samsung_smart_tv
+# (matched by input_text.movie_mode_jellyfin_device = "samsung").
+- id: movie_mode
+  alias: Movie mode (Jellyfin on living room TV)
+  description: >-
+    Playing → snapshot, dim overheads ~10%, warm low ceiling strip, TV strip → Video mode (via automation movie_scene_tv_video_mode).
+    Paused → overheads warm 30% + ceiling strips red 30%. Stopped/idle for 2 min → restore the snapshot
+    (powering back on the lights that were on first). Does nothing while Goodnight is active
+    (Goodnight also ends a movie already in progress, so pause/stop don't brighten).
+  mode: restart          # newest playback state wins (e.g. play pressed during a pause step)
+  triggers:
+    - trigger: state
+      entity_id: sensor.living_room_jellyfin_state
+      to: playing
+      not_from: [unavailable, unknown]   # ignore HA restarts / template reloads
+      id: playing
+    - trigger: state
+      entity_id: sensor.living_room_jellyfin_state
+      to: paused
+      not_from: [unavailable, unknown]   # ignore HA restarts / template reloads
+      id: paused
+    - trigger: state
+      entity_id: sensor.living_room_jellyfin_state
+      to: idle
+      not_from: [unavailable, unknown]
+      for: "00:02:00"
+      id: stopped
+  actions:
+    - choose:
+        - conditions:
+            - condition: trigger
+              id: playing
+            # After Goodnight, keep the night lights: no movie scene
+            - condition: state
+              entity_id: input_boolean.goodnight_active
+              state: "off"
+          sequence:
+            - if:
+                - condition: state
+                  entity_id: input_boolean.movie_mode_active
+                  state: "off"
+              then:
+                - action: scene.create
+                  data:
+                    scene_id: living_room_before_movie
+                    snapshot_entities:
+                      - light.living_room_gu10_1
+                      - light.living_room_gu10_2
+                      - light.living_room_gu10_3
+                      - light.living_room_gu10_4
+                      - light.living_room_ceiling_strip_1
+                      - light.living_room_ceiling_strip_2
+                      # (TV strip excluded: stays in Govee Video mode)
+                - action: input_text.set_value
+                  target:
+                    entity_id: input_text.movie_restore_on
+                  data:
+                    value: >-
+                      {{ ['light.living_room_gu10_1','light.living_room_gu10_2','light.living_room_gu10_3',
+                          'light.living_room_gu10_4','light.living_room_ceiling_strip_1','light.living_room_ceiling_strip_2']
+                         | select('is_state','on') | join(',') }}
+                - action: input_boolean.turn_on
+                  target:
+                    entity_id: input_boolean.movie_mode_active
+            - action: scene.turn_on
+              target:
+                entity_id: scene.movie_mode
+              data:
+                transition: 3
+            # Explicit off: a scene skips lights HA *thinks* are already off, and Govee's cloud
+            # status can be stale, so force Lights 1 and 4 off directly.
+            - action: light.turn_off
+              target:
+                entity_id: [light.living_room_gu10_1, light.living_room_gu10_4]
+        - conditions:
+            - condition: trigger
+              id: paused
+            - condition: state
+              entity_id: input_boolean.movie_mode_active
+              state: "on"
+          sequence:
+            # The four overheads are Matter (since 2026-11-12): they turn on with the look. Second command 0.5 s later
+            # with a very slightly different white (2800 K: 2695 K is the bulbs' warmest), as for the scenes.
+            - action: light.turn_on
+              target:
+                entity_id: light.living_room_overheads
+              data:
+                brightness_pct: 30
+                color_temp_kelvin: 2700
+            - delay: {milliseconds: 500}
+            - action: light.turn_on
+              target:
+                entity_id: light.living_room_overheads
+              data:
+                brightness_pct: 30
+                color_temp_kelvin: 2800
+            # The ceiling strips are still Govee: plain power-on first (Govee ignores color sent to an off strip)
+            - action: light.turn_on
+              target:
+                entity_id: light.living_room_ceiling_strip
+            - delay: "00:00:02"
+            - action: light.turn_on
+              target:
+                entity_id: light.living_room_ceiling_strip
+              data:
+                brightness_pct: 30
+                rgb_color: [255, 0, 0]
+            # Verify/retry power-on for any strip Govee didn't switch on, then re-apply the strip look
+            - action: script.govee_ensure_power
+              data:
+                entities: [light.living_room_ceiling_strip_1, light.living_room_ceiling_strip_2]
+            - action: light.turn_on
+              target:
+                entity_id: light.living_room_ceiling_strip
+              data:
+                brightness_pct: 30
+                rgb_color: [255, 0, 0]
+        - conditions:
+            - condition: trigger
+              id: stopped
+            - condition: state
+              entity_id: input_boolean.movie_mode_active
+              state: "on"
+          sequence:
+            - variables:
+                # Only the Govee ceiling strips need a separate power-on first; the four Matter bulbs come back
+                # on with the restored look directly (a separate power-on makes them race the scene).
+                to_power: >-
+                  {{ states('input_text.movie_restore_on').split(',') | map('trim')
+                     | select('match', 'light\\.living_room_ceiling_strip') | select('is_state', 'off') | list }}
+            - if: "{{ to_power | count > 0 }}"
+              then:
+                - action: light.turn_on
+                  target:
+                    entity_id: "{{ to_power }}"
+                - delay: "00:00:02"
+            - action: scene.turn_on
+              target:
+                entity_id: scene.living_room_before_movie
+              data:
+                transition: 3
+              continue_on_error: true
+            - if: "{{ to_power | count > 0 }}"
+              then:
+                - action: script.govee_ensure_power
+                  data:
+                    entities: "{{ to_power }}"
+                - action: scene.turn_on
+                  target:
+                    entity_id: scene.living_room_before_movie
+                  continue_on_error: true
+            - action: input_text.set_value
+              target:
+                entity_id: input_text.movie_restore_on
+              data:
+                value: ""
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.movie_mode_active
+
+# OFF by choice: the gaming PC is in the OFFICE, so living-room lights shouldn't follow it.
+# Kept only as a template for office lights later (swap scene.gaming_mode for an office scene).
+- id: gaming_mode
+  alias: Gaming mode (gaming PC comes online)
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.gaming_pc_online
+      from: "off"
+      to: "on"
+  conditions:
+    # (no "someone home" check: the PC turning on already means someone is home)
+    - condition: state
+      entity_id: input_boolean.movie_mode_active
+      state: "off"
+  actions:
+    - action: scene.turn_on
+      target:
+        entity_id: scene.gaming_mode
+      data:
+        transition: 2
+
+
+# OFF: no smart bulb in the bedroom/nursery (the KL125 moved to the office).
+# To revive: put a color smart bulb where night feeds happen, name it light.bedroom_bulb
+# (or change the two entity_ids below), enable this, and re-add Night Feed to the dashboards (Alexa/Emulated Hue was removed 2026-11-09).
+- id: night_feed_mode
+  alias: Night feed mode
+  description: >-
+    input_boolean.night_feed on → bedroom bulb ~1% deep amber-red (preserves night vision,
+    minimal melatonin disruption). Auto-off after 45 min. Alexa: "turn on/off night feed".
+  mode: restart
+  triggers:
+    - trigger: state
+      entity_id: input_boolean.night_feed
+      to: "on"
+      id: "on"
+    - trigger: state
+      entity_id: input_boolean.night_feed
+      to: "off"
+      id: "off"
+    - trigger: state
+      entity_id: input_boolean.night_feed
+      to: "on"
+      for: "00:45:00"
+      id: timeout
+  actions:
+    - choose:
+        - conditions:
+            - condition: trigger
+              id: "on"
+          sequence:
+            - action: light.turn_on
+              target:
+                entity_id: light.bedroom_bulb
+              data:
+                brightness_pct: 1
+                rgb_color: [255, 40, 0]
+        - conditions:
+            - condition: trigger
+              id: timeout
+          sequence:
+            - action: input_boolean.turn_off
+              target:
+                entity_id: input_boolean.night_feed
+        - conditions:
+            - condition: trigger
+              id: "off"
+          sequence:
+            - action: light.turn_off
+              target:
+                entity_id: light.bedroom_bulb
+              continue_on_error: true
+
+# ENABLED. Whenever the Movie Mode scene is activated (Alexa "Movie Mode", dashboard, the Jellyfin
+# automation above...), also apply the saved Govee snapshot "TV Video Mode" to the TV backlight.
+- id: movie_scene_tv_video_mode
+  alias: Movie / Gaming / Relax scene – TV strip to Video mode
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: [scene.movie_mode, scene.gaming_mode, scene.living_room_relax]
+      id: scene
+    # TV turned on while Relax is still the active look → Video mode then
+    - trigger: state
+      entity_id: media_player.samsung_tv
+      from: "off"
+      to: "on"
+      id: tv_on
+  conditions:
+    - condition: template
+      value_template: >-
+        {% if trigger.id == 'scene' %}
+          {# A scene's state is its last-activated timestamp; ignore reload/startup transitions.
+             Relax only switches the strip while the living room TV is on. #}
+          {{ trigger.from_state is not none
+             and trigger.from_state.state not in ['unavailable', 'unknown']
+             and trigger.to_state.state not in ['unavailable', 'unknown']
+             and (trigger.entity_id != 'scene.living_room_relax' or is_state('media_player.samsung_tv', 'on')) }}
+        {% else %}
+          {# Relax must be the most recently applied living-room look, and the living room still lit #}
+          {% set looks = ['scene.movie_mode', 'scene.gaming_mode', 'scene.living_room_relax', 'scene.living_room_bright',
+                          'scene.goodnight_lights', 'scene.good_morning_lights'] %}
+          {% set ns = namespace(latest='', t='') %}
+          {% for e in looks if states(e) not in ['unknown', 'unavailable'] and states(e) > ns.t %}
+            {% set ns.latest = e %}{% set ns.t = states(e) %}
+          {% endfor %}
+          {{ ns.latest == 'scene.living_room_relax' and is_state('light.living_room', 'on') }}
+        {% endif %}
+  actions:
+    - action: script.tv_strip_video_mode
+
+# ENABLED. Govee "power assist" for the living-room scenes: Govee's cloud ignores brightness/color
+# commands sent to a bulb that's off, so a scene can leave some of its lights dark. ~7 s after any
+# of these scenes is applied (dashboard, Alexa, automations), power on any of its lights that should be
+# on but are still off, then re-apply the scene. Keep the lists in sync with scenes/living_room.yaml.
+- id: govee_scene_power_assist
+  alias: Govee – power on scene lights left off
+  mode: single
+  max_exceeded: silent
+  triggers:
+    - trigger: state
+      entity_id: [scene.movie_mode, scene.gaming_mode, scene.living_room_bright, scene.living_room_relax,
+                  scene.goodnight_lights, scene.good_morning_lights]
+  conditions:
+    - condition: template
+      value_template: >-
+        {{ trigger.from_state is not none
+           and trigger.from_state.state not in ['unavailable', 'unknown']
+           and trigger.to_state.state not in ['unavailable', 'unknown'] }}
+  actions:
+    - variables:
+        # Only the two Govee ceiling strips are checked: the four ceiling bulbs are Matter (since 2026-11-12) and
+        # don't need power assist.
+        strips: [light.living_room_ceiling_strip_1, light.living_room_ceiling_strip_2]
+        should_be_on:
+          scene.movie_mode: "{{ strips }}"
+          scene.gaming_mode: "{{ strips }}"
+          scene.living_room_bright: "{{ strips }}"
+          scene.living_room_relax: "{{ strips }}"
+          scene.good_morning_lights: "{{ strips }}"
+          scene.goodnight_lights: "{{ strips }}"
+        should_be_off:
+          scene.movie_mode: [light.living_room_gu10_1, light.living_room_gu10_4]
+          scene.gaming_mode: [light.living_room_gu10_1, light.living_room_gu10_4]
+          scene.goodnight_lights: [light.living_room_gu10_1, light.living_room_gu10_4, light.living_room_tv_strip]
+        scene_id: "{{ trigger.entity_id }}"
+    # Scenes skip lights HA believes are already off; Govee status can be stale, so force them off.
+    - if: "{{ should_be_off.get(scene_id, []) | count > 0 }}"
+      then:
+        - action: light.turn_off
+          target:
+            entity_id: "{{ should_be_off[scene_id] }}"
+    - delay: "00:00:07"   # govee2mqtt re-polls device state ~5 s after a command
+    - variables:
+        left_off: "{{ should_be_on[scene_id] | select('is_state', 'off') | list }}"
+    - if: "{{ left_off | count > 0 }}"
+      then:
+        - action: script.govee_ensure_power
+          data:
+            entities: "{{ left_off }}"
+        - action: scene.turn_on
+          target:
+            entity_id: "{{ scene_id }}"
+
+# ENABLED 2026-11-12. After any living-room mode, send the four Matter bulbs that should be on ONE
+# second command shortly after the scene: same brightness, a very slightly different color, so the bulb gets a real
+# change to apply (they sometimes ignore the color of the first command and report it anyway). Whites are 100 K
+# off the scene (lower, except 2700 K looks go to 2800 K: 2695 K is the bulbs' warmest), Goodnight's purple ~2° of hue further. Movie waits 3.5 s so Jellyfin's 3 s fade-in finishes.
+# Keep in sync with scenes/living_room.yaml.
+- id: living_room_look_second_command
+  alias: Living room look – second command to the 4 bulbs
+  mode: restart
+  max_exceeded: silent
+  triggers:
+    - trigger: state
+      entity_id: [scene.movie_mode, scene.gaming_mode, scene.living_room_bright, scene.living_room_relax,
+                  scene.goodnight_lights, scene.good_morning_lights]
+  conditions:
+    - condition: template
+      value_template: >-
+        {{ trigger.from_state is not none
+           and trigger.from_state.state not in ['unavailable', 'unknown']
+           and trigger.to_state.state not in ['unavailable', 'unknown'] }}
+  actions:
+    - variables:
+        all4: [light.living_room_gu10_1, light.living_room_gu10_2, light.living_room_gu10_3, light.living_room_gu10_4]
+        looks:   # scene value in the comment
+          scene.movie_mode:          {ents: [light.living_room_gu10_2, light.living_room_gu10_3], b: 51, ct: 2800}   # 2700
+          scene.gaming_mode:         {ents: [light.living_room_gu10_2, light.living_room_gu10_3], b: 64, ct: 2800}   # 2700
+          scene.living_room_bright:  {ents: "{{ all4 }}", b: 255, ct: 3400}                                         # 3500
+          scene.living_room_relax:   {ents: "{{ all4 }}", b: 51, ct: 2800}                                          # 2700
+          scene.good_morning_lights: {ents: "{{ all4 }}", b: 102, ct: 6400}                                         # 6500
+          scene.goodnight_lights:    {ents: [light.living_room_gu10_2, light.living_room_gu10_3], b: 3, hs: [272, 100]}  # rgb 128,0,255 = hue 270
+        look: "{{ looks[trigger.entity_id] }}"
+    - delay:
+        milliseconds: "{{ 3500 if trigger.entity_id == 'scene.movie_mode' else 500 }}"
+    - variables:
+        targets: "{{ look.ents | select('is_state', 'on') | list }}"
+    - if: "{{ targets | count > 0 }}"
+      then:
+        - if: "{{ look.hs is defined }}"
+          then:
+            - action: light.turn_on
+              target: {entity_id: "{{ targets }}"}
+              data: {brightness: "{{ look.b }}", hs_color: "{{ look.hs }}"}
+          else:
+            - action: light.turn_on
+              target: {entity_id: "{{ targets }}"}
+              data: {brightness: "{{ look.b }}", color_temp_kelvin: "{{ look.ct }}"}
+
+# ENABLED. Ends "Goodnight active" (which keeps Jellyfin movie mode from touching the lights) when a
+# living-room look is applied (dashboard, Siri, Gemini, Arrive home...) or at the morning reset time.
+- id: goodnight_clear
+  alias: Goodnight active – clear on next look or late morning
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: [scene.movie_mode, scene.gaming_mode, scene.living_room_relax, scene.living_room_bright,
+                  scene.good_morning_lights]
+      id: scene
+    - trigger: time
+      at: input_datetime.goodnight_reset_time
+      id: time
+  conditions:
+    - condition: state
+      entity_id: input_boolean.goodnight_active
+      state: "on"
+    - condition: template
+      value_template: >-
+        {{ trigger.id != 'scene'
+           or (trigger.from_state is not none
+               and trigger.from_state.state not in ['unavailable', 'unknown']
+               and trigger.to_state.state not in ['unavailable', 'unknown']) }}
+  actions:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.goodnight_active

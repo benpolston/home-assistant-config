@@ -1,0 +1,57 @@
+# ---- Secrets and credentials: never commit ----
+secrets.yaml
+**/secrets.yaml
+!config/secrets.example.yaml
+.secrets/
+*.env
+.env*
+*token*
+*auth*
+*credential*
+*secret*
+!config/secrets.example.yaml
+mosquitto/config/passwd
+*.pem
+*.key
+
+# ---- Home Assistant runtime state (contains tokens, device IDs, location) ----
+.storage/
+.cloud/
+.cache/
+tts/
+deps/
+config/www/
+config/dashboards/
+config/.HA_VERSION
+config/.ha_run.lock
+config/ip_bans.yaml
+config/known_devices.yaml
+
+# ---- Databases and logs ----
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.log
+*.log.*
+*.log.fault
+
+# ---- Backups ----
+backups/
+*.tar
+*.tar.gz
+
+# ---- Service data dirs (pairing keys, fabric credentials, device caches) ----
+mosquitto/data/
+mosquitto/log/
+govee2mqtt/data/
+matter-server/data/
+matter-server-js/data/
+matterjs-server-src/
+radvd/prefix.txt
+
+# ---- Generated / local ----
+dashboards/*.json
+tools/screenshot/out/
+__pycache__/
+*.pyc

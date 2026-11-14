@@ -1,0 +1,106 @@
+# Google Calendar on the dashboards + evening-before reminders.
+# Calendars shown: the main calendar, US holidays, "good to know", birthdays (not "Dinners").
+
+input_boolean:
+  calendar_evening_reminders:
+    name: Evening-before reminders
+    icon: mdi:calendar-alert
+
+input_text:
+  calendar_reminder_skip:
+    # Comma-separated event titles that never get an evening-before reminder (case-insensitive)
+    name: Reminder skip list
+    icon: mdi:calendar-remove
+    max: 255
+
+template:
+  - triggers:
+      - trigger: time_pattern
+        minutes: "/5"
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: event_template_reloaded
+    actions:
+      - action: calendar.get_events
+        target:
+          entity_id:
+            - calendar.primary
+            - calendar.holidays_in_united_states
+            - calendar.good_to_know
+            - calendar.birthdays
+        data:
+          duration: {days: 8}
+        response_variable: cal
+    sensor:
+      # "Dentist · 9:00 AM" = next timed event still to come today; "none" if nothing left today.
+      # Attribute "agenda": next 5 events (incl. all-day) as display lines for the dashboards.
+      - name: Next event today
+        unique_id: calendar_next_event_today
+        icon: mdi:calendar-clock
+        state: >-
+          {% set ns = namespace(ev=[]) %}
+          {% for c, d in cal.items() %}{% for e in d.events %}{% set ns.ev = ns.ev + [e] %}{% endfor %}{% endfor %}
+          {% set upcoming = ns.ev | selectattr('start', 'search', 'T') | list %}
+          {% set ns2 = namespace(best=none) %}
+          {% for e in upcoming | sort(attribute='start') %}
+            {% set t = as_datetime(e.start) %}
+            {% if ns2.best is none and t > now() and t.date() == now().date() %}{% set ns2.best = e %}{% endif %}
+          {% endfor %}
+          {% if ns2.best %}{{ ns2.best.summary }} · {{ as_datetime(ns2.best.start).strftime('%-I:%M %p') }}{% else %}none{% endif %}
+        attributes:
+          agenda: >-
+            {% set ns = namespace(ev=[], out=[]) %}
+            {% for c, d in cal.items() %}{% for e in d.events %}{% set ns.ev = ns.ev + [e] %}{% endfor %}{% endfor %}
+            {% for e in ns.ev | sort(attribute='start') %}
+              {% set timed = 'T' in e.start %}
+              {% set dt = as_datetime(e.start) if timed else as_datetime(e.start ~ 'T00:00:00').replace(tzinfo=now().tzinfo) %}
+              {% set ended = (as_datetime(e.end) < now()) if timed else (dt.date() < now().date()) %}
+              {% if not ended and ns.out | count < 8 %}
+                {% set days = (dt.date() - now().date()).days %}
+                {% set day = 'Today' if days <= 0 else ('Tomorrow' if days == 1 else dt.strftime('%a %b %-d')) %}
+                {% set ns.out = ns.out + [day ~ (' ' ~ dt.strftime('%-I:%M %p') if timed else '') ~ ' · ' ~ e.summary] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.out }}
+
+automation:
+  - id: calendar_evening_before_reminder
+    alias: Calendar – evening-before reminder
+    description: >-
+      At input_datetime.evening_reminder_time, push tomorrow's timed events from the main calendar to both phones,
+      except titles in input_text.calendar_reminder_skip (e.g. a recurring weekly event).
+    mode: single
+    triggers:
+      - trigger: time
+        at: input_datetime.evening_reminder_time
+    conditions:
+      - condition: state
+        entity_id: input_boolean.calendar_evening_reminders
+        state: "on"
+    actions:
+      - action: calendar.get_events
+        target:
+          entity_id: calendar.primary
+        data:
+          start_date_time: "{{ (today_at('00:00') + timedelta(days=1)).isoformat() }}"
+          end_date_time: "{{ (today_at('00:00') + timedelta(days=2)).isoformat() }}"
+        response_variable: cal
+      - variables:
+          skip: >-
+            {{ states('input_text.calendar_reminder_skip').lower().split(',') | map('trim')
+               | reject('in', ['', 'unknown', 'unavailable']) | list }}
+          items: >-
+            {% set ns = namespace(out=[]) %}
+            {% for e in cal['calendar.primary'].events | sort(attribute='start') %}
+              {% if 'T' in e.start and e.summary | lower | trim not in skip %}
+                {% set ns.out = ns.out + [e.summary ~ ' at ' ~ as_datetime(e.start).strftime('%-I:%M %p')] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.out }}
+      - condition: template
+        value_template: "{{ items | count > 0 }}"
+      - action: script.notify_phones
+        data:
+          title: Tomorrow
+          message: "{{ items | join(', ') }}"

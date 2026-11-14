@@ -1,0 +1,63 @@
+# Home Assistant stack. Jellyfin/arr stacks (/opt/arr, systemd jellyfin) are separate — do not mix.
+name: homeassistant
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    network_mode: host          # mDNS/SSDP/UDP discovery, WoL broadcast, Emulated Hue :80
+    privileged: true            # per official HA Container docs (Bluetooth, hw sensors)
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      TZ: Etc/UTC          # set to your timezone
+    volumes:
+      - ./config:/config
+      - /etc/localtime:/etc/localtime:ro
+      - /run/dbus:/run/dbus:ro
+      - /mnt/media1:/mnt/media1:ro      # read-only, so System Monitor can report media-disk usage
+    depends_on: [mosquitto]
+
+  mosquitto:
+    container_name: mosquitto
+    image: eclipse-mosquitto:2.1.2-alpine
+    network_mode: host
+    restart: unless-stopped
+    user: "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+  # Matter controller for HA's Matter integration (ws://127.0.0.1:5580/ws).
+  # matterjs-server (drop-in replacement for python-matter-server, same WebSocket API) because Govee H600D bulbs
+  # return an error when the controller reads their VendorID/ProductID, which makes the old CHIP-based server abort
+  # at ReadCommissioningInfo. matter.js merged a fix on 2026-11-10 (PRs #4939/#4940); only the alpha builds have it
+  # so far (stable 1.5.5 is from 2026-10-24). ENABLE_TEST_NET_DCL also commissions devices that don't report a vendor/
+  # product id. Revert: put the python-matter-server block back once a stable release has the fix.
+  matter-server:
+    container_name: matter-server
+    # Built locally from source at commit 36b1cdc (2026-11-12 13:10Z), the first commit where the server accepts a
+    # device that doesn't report VendorID/ProductID when test-net DCL is on (no published image has it yet; the
+    # published 1.5.6-alpha.0-20261112-72fdb89 image predates it). Once a published tag includes 36b1cdc, swap back to:
+    #   image: ghcr.io/matter-js/matterjs-server:<that tag>   (and delete the build: block + ./matterjs-server-src)
+    image: matterjs-server:local-36b1cdc
+    build:
+      context: ./matterjs-server-src
+      dockerfile: docker/matterjs-server/Dockerfile.dev
+    network_mode: host          # mDNS + IPv6 link-local, which Matter needs
+    restart: unless-stopped
+    environment:
+      PRIMARY_INTERFACE: enp3s0   # host has many interfaces (wired, unused wifi, docker bridges, tailscale)
+      ENABLE_TEST_NET_DCL: "true"
+    volumes:
+      - ./matter-server-js/data:/data   # fresh store; the old python-server data in ./matter-server/data is kept untouched
+
+  govee2mqtt:
+    container_name: govee2mqtt
+    image: ghcr.io/wez/govee2mqtt:2026.03.25-ab9deb66
+    network_mode: host          # required by govee2mqtt (LAN API UDP 4001-4003)
+    restart: unless-stopped
+    env_file: [./.secrets/govee2mqtt.env]
+    volumes:
+      - ./govee2mqtt/data:/data
+    depends_on: [mosquitto]

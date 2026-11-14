@@ -1,0 +1,35 @@
+# Govee features govee2mqtt can't do, via Govee's official Platform API.
+# TV strip (H605B DreamView T1 Pro) "Video mode" (camera sync) has no API control, so a
+# Govee app Snapshot "TV Video Mode" was saved with the strip in Video mode; this triggers it.
+# Device id and snapshot id below are placeholders. If the snapshot is deleted/recreated in the Govee app, its id changes: re-query
+#   GET https://openapi.api.govee.com/router/api/v1/user/devices  (capability instance "snapshot").
+
+rest_command:
+  govee_tv_strip_video_mode:
+    url: https://openapi.api.govee.com/router/api/v1/device/control
+    method: POST
+    timeout: 15
+    headers:
+      Govee-API-Key: !secret govee_api_key
+    content_type: application/json
+    payload: >-
+      {"requestId": "{{ now().timestamp() | int }}",
+       "payload": {"sku": "H605B", "device": "XX:XX:XX:XX:XX:XX:XX:XX",
+         "capability": {"type": "devices.capabilities.dynamic_scene",
+                        "instance": "snapshot", "value": 1234567}}}
+
+script:
+  tv_strip_video_mode:
+    alias: TV strip video mode
+    icon: mdi:television-ambient-light
+    description: Puts the Govee TV backlight back into Video (camera sync) mode via the Govee app snapshot "TV Video Mode".
+    mode: single
+    sequence:
+      - action: rest_command.govee_tv_strip_video_mode
+        response_variable: resp
+      - if: "{{ resp.status != 200 or (resp.content.code | default(200)) != 200 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: TV strip video mode failed
+              message: "Govee API answered {{ resp.status }}: {{ resp.content }}"

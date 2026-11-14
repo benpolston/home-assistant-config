@@ -1,0 +1,57 @@
+# Presence automations — rely on each person.* entity having a phone device tracker.
+# zone.home's state is the number of people home.
+
+# ENABLED 2026-11-07 (both iPhones attached; notify_targets set).
+- id: everyone_away
+  alias: Everyone away – lights and TVs off
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: zone.home
+      to: "0"
+      for: "00:15:00"   # grace period
+  conditions:
+    # Skip entirely while a guest is staying (input_boolean.guest_mode)
+    - condition: state
+      entity_id: input_boolean.guest_mode
+      state: "off"
+    # Guard: only when presence is actually wired up (otherwise zone.home is always 0)
+    - condition: template
+      value_template: >-
+        {{ states.person | selectattr('attributes.device_trackers', 'defined')
+           | selectattr('attributes.device_trackers') | list | count > 0 }}
+  actions:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: [input_boolean.movie_mode_active, input_boolean.night_feed]
+    - action: light.turn_off
+      target:
+        entity_id: all
+    - action: switch.turn_off
+      target:
+        entity_id: switch.living_room_heater
+      continue_on_error: true
+    - action: script.tvs_off
+    - action: script.notify_phones
+      data:
+        title: Everyone's away
+        message: Lights, TVs and the heater are off.
+
+# ENABLED 2026-11-07 (both iPhones attached).
+# No daylight condition (the living room gets little daylight): any arrival turns it on if it's off.
+- id: arrive_after_sunset
+  alias: Arrive home – living room on
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: [person.resident_1, person.resident_2]
+      to: home
+      not_from: [unknown, unavailable]   # ignore HA restarts
+  conditions:
+    - condition: state
+      entity_id: light.living_room
+      state: "off"
+  actions:
+    - action: scene.turn_on
+      target:
+        entity_id: scene.living_room_relax

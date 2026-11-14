@@ -1,0 +1,38 @@
+# Light groups over the Govee devices (via govee2mqtt, cloud — these models have no LAN Control).
+# Govee app name → planned entity ID:
+#   Living Room Light 1-4 → light.living_room_gu10_1..4 (Matter, local; old Govee-cloud entities are light.govee_cloud_gu10_N, disabled)   TV Lightstrip → light.living_room_tv_strip
+#   LR Lightstrip 1 / 2   → light.living_room_ceiling_strip_1 / _2 (grouped below)
+# Office = Kasa KL125 → light.office_bulb. Bedroom: regular bulb (no smart bulb). Garage Lepro: not integrated.
+# Member entity IDs are the *planned* names. When govee2mqtt discovers each device, its
+# entity ID gets renamed to the matching name below (Settings > Entities > rename), so the
+# groups, automations and dashboards need no edits. Until then the groups show "unavailable".
+
+light:
+  - platform: group
+    name: Living Room Overheads
+    unique_id: living_room_overheads
+    entities:
+      - light.living_room_gu10_1
+      - light.living_room_gu10_2
+      - light.living_room_gu10_3
+      - light.living_room_gu10_4
+
+  - platform: group
+    name: Living Room
+    unique_id: living_room_all
+    entities:
+      - light.living_room_gu10_1
+      - light.living_room_gu10_2
+      - light.living_room_gu10_3
+      - light.living_room_gu10_4
+      - light.living_room_ceiling_strip_1
+      - light.living_room_ceiling_strip_2
+      - light.living_room_tv_strip
+
+  # Govee "LR Lightstrip 1" + "LR Lightstrip 2" = the ceiling perimeter strip, controlled as one
+  - platform: group
+    name: Living Room Ceiling Strip
+    unique_id: living_room_ceiling_strip
+    entities:
+      - light.living_room_ceiling_strip_1
+      - light.living_room_ceiling_strip_2

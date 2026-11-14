@@ -1,0 +1,37 @@
+# Safety automations — ENABLED. These only ever turn things OFF.
+
+- id: heater_max_runtime
+  alias: Heater safety – auto-off after max runtime
+  description: >-
+    The living room space heater (KP303 outlet "Heater") turns off after running continuously for
+    input_number.heater_max_hours (default 4 h), counted from when the outlet last switched on or from the last HA restart,
+    whichever is later. Turn it back on manually if still needed.
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: switch.living_room_heater
+      to: "on"
+      for:
+        hours: "{{ states('input_number.heater_max_hours') | int(4) }}"
+    # Backstop: also catches a heater that was already on when HA (re)started or the
+    # automation was reloaded, which the state trigger above can't see.
+    - trigger: time_pattern
+      minutes: "/5"
+  conditions:
+    - condition: state
+      entity_id: switch.living_room_heater
+      state: "on"
+    - condition: template
+      value_template: >-
+        {{ (now() - states.switch.living_room_heater.last_changed).total_seconds()
+           >= states('input_number.heater_max_hours') | int(4) * 3600 }}
+  actions:
+    - action: switch.turn_off
+      target:
+        entity_id: switch.living_room_heater
+    - action: script.notify_phones
+      data:
+        title: Heater turned off
+        message: >-
+          The living room heater ran for {{ states('input_number.heater_max_hours') | int(4) }} hours
+          and was switched off for safety.

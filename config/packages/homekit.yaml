@@ -1,0 +1,84 @@
+# HomeKit Bridge → Apple Home / Siri (added 2026-11-08).
+# Separate, curated list (not the Assist exposure list, which has lots of clutter).
+# Pair: HA sidebar → Notifications → scan the QR code with the Home app (one per entry below:
+# the bridge plus the Living Room TV, which must be a standalone accessory to get the TV tile + remote).
+# Bedroom TV (Vizio) deliberately left out.
+# Changing names here only affects NEW pairings' defaults; rename in the Home app afterwards.
+# Second household member's copies: with no Apple home hub, a second person can't be invited to the first
+# person's Home, so they pair these two into their own Home. YAML anchors reuse the lists, so edits apply to both.
+# The heater is in HomeKit (manual control) but hidden from the voice assistant; the safety auto-off still applies.
+
+homekit:
+  - name: HA Bridge
+    port: 21063
+    advertise_ip: !secret homekit_advertise_ip   # don't advertise the Docker/Tailscale interfaces
+    filter: &bridge_filter
+      include_entities:
+        # Lights
+        - light.living_room_gu10_1
+        - light.living_room_gu10_2
+        - light.living_room_gu10_3
+        - light.living_room_gu10_4
+        - light.living_room_ceiling_strip
+        - light.living_room_tv_strip
+        - light.office_bulb
+        # Outlets
+        - switch.living_room_fan
+        - switch.living_room_heater
+        - switch.power_strip_spare
+        # Scenes and routines (show as switches; "Hey Siri, turn on Movie Mode")
+        - scene.movie_mode
+        - scene.gaming_mode
+        - scene.living_room_relax
+        - scene.living_room_bright
+        - script.goodnight
+        - script.good_morning
+        # Other
+        - switch.gaming_pc
+        - input_boolean.guest_mode
+        - script.baby_log_feed
+        - script.baby_log_diaper
+    entity_config: &bridge_entities
+      light.living_room_gu10_1: {name: Living Room Light 1}
+      light.living_room_gu10_2: {name: Living Room Light 2}
+      light.living_room_gu10_3: {name: Living Room Light 3}
+      light.living_room_gu10_4: {name: Living Room Light 4}
+      light.living_room_ceiling_strip: {name: Ceiling Strips}
+      light.living_room_tv_strip: {name: TV Strip}
+      light.office_bulb: {name: Office Light}
+      switch.living_room_fan: {name: Fan, type: outlet}
+      switch.living_room_heater: {name: Heater, type: outlet}
+      switch.power_strip_spare: {name: Spare Outlet, type: outlet}
+      scene.movie_mode: {name: Movie Mode}
+      scene.gaming_mode: {name: Gaming Mode}
+      scene.living_room_relax: {name: Relax Mode}
+      scene.living_room_bright: {name: Bright Mode}
+      script.goodnight: {name: Goodnight Routine}
+      script.good_morning: {name: Good Morning Routine}
+      switch.gaming_pc: {name: Gaming PC}
+      input_boolean.guest_mode: {name: Guest Mode}
+      script.baby_log_feed: {name: Log Feed}
+      script.baby_log_diaper: {name: Log Diaper}
+
+  - name: Living Room TV
+    port: 21064
+    mode: accessory
+    advertise_ip: !secret homekit_advertise_ip
+    filter: &tv_filter
+      include_entities: [media_player.samsung_tv]
+    entity_config: &tv_entities
+      media_player.samsung_tv: {name: Living Room TV}
+
+  # Second household member's copies (paired into their own Home app). Same accessories as above.
+  - name: HA Bridge 2
+    port: 21065
+    advertise_ip: !secret homekit_advertise_ip
+    filter: *bridge_filter
+    entity_config: *bridge_entities
+
+  - name: Living Room TV 2
+    port: 21066
+    mode: accessory
+    advertise_ip: !secret homekit_advertise_ip
+    filter: *tv_filter
+    entity_config: *tv_entities

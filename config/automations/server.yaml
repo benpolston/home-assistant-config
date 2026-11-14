@@ -1,0 +1,58 @@
+# Server watchdog — ENABLED from day one. Notifications go nowhere until the iPhones
+# register (input_text.notify_targets); that's harmless. Echo announcements are a no-op (Echos removed 2026-11-09).
+# Thresholds: Jellyfin /health failing 3 min, any disk >90%, CPU temp >85 °C (185 °F) for 5 min (works in either unit).
+
+- id: server_watchdog
+  alias: Server watchdog
+  mode: queued
+  max: 10
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.jellyfin_web
+      to: "off"
+      for: "00:03:00"
+      id: jellyfin
+    - trigger: numeric_state
+      entity_id:
+        - sensor.system_monitor_disk_usage
+        - sensor.system_monitor_disk_usage_mnt_media1
+      above: 90
+      id: disk
+    # Unit-independent: the sensor's display unit has been °F and °C at different times,
+    # so convert to °C and alert above 85 °C (185 °F).
+    - trigger: template
+      value_template: >-
+        {% set t = states('sensor.system_monitor_processor_temperature') | float(0) %}
+        {% set u = state_attr('sensor.system_monitor_processor_temperature', 'unit_of_measurement') %}
+        {{ (t if u == '°C' else (t - 32) * 5 / 9) > 85 }}
+      for: "00:05:00"
+      id: temp
+  actions:
+    - variables:
+        msg: >-
+          {% if trigger.id == 'jellyfin' %}Jellyfin's web UI has been down for 3 minutes.
+          {% elif trigger.id == 'disk' %}{{ trigger.to_state.name }} is at {{ trigger.to_state.state }}%.
+          {% else %}Media server CPU is at {{ states('sensor.system_monitor_processor_temperature') }}{{ state_attr('sensor.system_monitor_processor_temperature', 'unit_of_measurement') }}.{% endif %}
+    - action: script.notify_everyone
+      data:
+        title: Media server alert
+        message: "{{ msg }}"
+
+- id: server_watchdog_jellyfin_recovered
+  alias: Server watchdog – Jellyfin recovered
+  mode: single
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.jellyfin_web
+      from: "off"
+      to: "on"
+  conditions:
+    # Only if it had been down long enough to have alerted
+    - condition: template
+      value_template: >-
+        {{ (as_timestamp(now()) - as_timestamp(trigger.from_state.last_changed)) > 180 }}
+  actions:
+    - action: script.notify_phones
+      data:
+        title: Media server
+        message: Jellyfin is back up.

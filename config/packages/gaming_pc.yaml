@@ -1,0 +1,22 @@
+# Gaming PC (Ryzen 5 7600X / RTX 3070, Windows).
+# MAC + IP come from secrets.yaml. Fill them in from secrets.example.yaml;
+# after filling them in, restart HA. Enable WoL in the PC BIOS/NIC settings.
+
+switch:
+  # On = sends the magic packet. State = ping of gaming_pc_ip (needs ICMP echo allowed in
+  # Windows Firewall). Off = sleep via HASS.Agent if installed.
+  - platform: wake_on_lan
+    name: Gaming PC
+    mac: !secret gaming_pc_mac
+    host: !secret gaming_pc_ip
+    turn_off:
+      action: script.gaming_pc_sleep
+
+template:
+  - binary_sensor:
+      - name: Gaming PC Online
+        unique_id: gaming_pc_online
+        device_class: connectivity
+        icon: mdi:desktop-tower
+        state: "{{ is_state('switch.gaming_pc', 'on') }}"
+        availability: "{{ has_value('switch.gaming_pc') }}"

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Headless screenshots of HA dashboards for review (uses the Playwright Docker image, ~3.4 GB;
+# remove with: sudo docker rmi mcr.microsoft.com/playwright/python:v1.49.1-noble).
+# Usage: tools/screenshot/shoot phone=/dashboard-home/home@390x844@2 tablet=/dashboard-tablet/home@1280x800
+# Output: ~/homeassistant/tools/screenshot/out/*.png (gitignored). Names containing "tablet" hide the sidebar.
+cd "$(dirname "$0")" || exit 1
+mkdir -p out
+sudo docker run --rm --network host --ipc host -e HA_TOKEN="$(cat ../../.secrets/ha_token)" \
+  -v "$PWD":/work -w /work mcr.microsoft.com/playwright/python:v1.49.1-noble \
+  sh -c 'pip install -q playwright==1.49.1 2>/dev/null; python shot.py /work/out "$@"' _ "$@"

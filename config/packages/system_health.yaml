@@ -1,0 +1,121 @@
+# System health: tell the admin (their phone only) when part of the setup quietly breaks, and when it recovers.
+# Problems surface as binary_sensor.problem_* (device_class problem) and a red "System" chip on the dashboards.
+
+template:
+  - binary_sensor:
+      - name: Problem – Govee bridge
+        unique_id: problem_govee_bridge
+        device_class: problem
+        # Bridge/MQTT down, or every Govee-bridge light unreachable (e.g. the Govee API key stopped working).
+        # The four ceiling bulbs (living_room_gu10_1..4) are Matter-local since 2026-11-12, so they no longer say
+        # anything about the Govee bridge and are not listed here.
+        state: >-
+          {% set lights = ['light.living_room_ceiling_strip_1',
+                           'light.living_room_ceiling_strip_2','light.living_room_tv_strip'] %}
+          {{ states('sensor.govee_to_mqtt_version') in ['unavailable', 'unknown']
+             or lights | select('is_state', 'unavailable') | list | count == lights | count }}
+      - name: Problem – Google connection
+        unique_id: problem_google
+        device_class: problem
+        state: "{{ states('calendar.primary') in ['unavailable', 'unknown'] }}"
+      - name: Problem – Backups
+        unique_id: problem_backups
+        device_class: problem
+        # No successful automatic backup in the last 50 hours (daily schedule + slack)
+        state: >-
+          {% set t = states('sensor.backup_last_successful_automatic_backup') %}
+          {{ t in ['unavailable', 'unknown', 'none', ''] or (now() - as_datetime(t)).total_seconds() > 50 * 3600 }}
+      - name: Problem – Weather alerts feed
+        unique_id: problem_weather_alerts
+        device_class: problem
+        # No successful NWS fetch for 20 minutes (polls every 2)
+        state: >-
+          {% set t = state_attr('sensor.weather_alerts', 'last_ok') %}
+          {{ t is none or (now() - as_datetime(t)).total_seconds() > 1200 }}
+      - name: Home Assistant update available
+        unique_id: ha_update_available
+        device_class: update
+        state: >-
+          {% set cur = states('sensor.home_assistant_version_current_version') %}
+          {% set new = states('sensor.home_assistant_version_docker_hub') %}
+          {{ cur not in ['unavailable', 'unknown'] and new not in ['unavailable', 'unknown'] and new | version > cur }}
+  - sensor:
+      # "0" when healthy; otherwise the number of problems (attr "list" names them) — drives the dashboard chip
+      - name: System problems
+        unique_id: system_problems
+        icon: mdi:alert-circle
+        state: >-
+          {{ ['binary_sensor.problem_govee_bridge', 'binary_sensor.problem_google',
+              'binary_sensor.problem_backups', 'binary_sensor.problem_weather_alerts'] | select('is_state', 'on') | list | count }}
+        attributes:
+          list: >-
+            {{ ['binary_sensor.problem_govee_bridge', 'binary_sensor.problem_google',
+                'binary_sensor.problem_backups', 'binary_sensor.problem_weather_alerts'] | select('is_state', 'on')
+               | map('state_attr', 'friendly_name') | map('replace', 'Problem – ', '') | list }}
+
+automation:
+  - id: system_health_alert
+    alias: System health – alert admin
+    description: Push to the admin's phone when a monitored part breaks (30 min grace), and again when it recovers.
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: [binary_sensor.problem_govee_bridge, binary_sensor.problem_google,
+                    binary_sensor.problem_weather_alerts]
+        from: "off"
+        to: "on"
+        for: "00:30:00"
+        id: broken
+      - trigger: state
+        entity_id: binary_sensor.problem_backups
+        from: "off"
+        to: "on"
+        id: broken
+      - trigger: state
+        entity_id: [binary_sensor.problem_govee_bridge, binary_sensor.problem_google,
+                    binary_sensor.problem_backups,
+                    binary_sensor.problem_weather_alerts]
+        from: "on"
+        to: "off"
+        id: fixed
+    conditions:
+      # Only send "fixed" if the problem lasted long enough to have been alerted
+      - condition: template
+        value_template: >-
+          {{ trigger.id == 'broken'
+             or trigger.entity_id == 'binary_sensor.problem_backups'
+             or (now() - trigger.from_state.last_changed).total_seconds() >= 1800 }}
+    actions:
+      - variables:
+          what: "{{ trigger.to_state.name | replace('Problem – ', '') }}"
+          hint: >-
+            {% set e = trigger.entity_id %}
+            {% if 'govee' in e %}Govee lights can't be controlled. Check: sudo docker logs govee2mqtt (the API key may have expired).
+            {% elif 'google' in e %}Google Calendar/Drive disconnected. Settings → Devices & services → Google → Reconfigure (sign in again).
+            {% elif 'weather' in e %}Weather alerts can't reach api.weather.gov, so you won't get storm warnings. Usually an NWS outage or no internet; check the router.
+            {% else %}No successful backup in 2 days. Settings → System → Backups shows the error.{% endif %}
+      - action: notify.mobile_app_resident_1_phone
+        data:
+          title: "{{ ('⚠️ ' ~ what ~ ' problem') if trigger.id == 'broken' else ('✅ ' ~ what ~ ' back to normal') }}"
+          message: "{{ hint if trigger.id == 'broken' else 'It recovered on its own.' }}"
+
+  - id: system_health_monthly_update
+    alias: System health – monthly update check
+    mode: single
+    triggers:
+      - trigger: time
+        at: "10:00:00"
+    conditions:
+      - condition: template
+        value_template: "{{ now().day == 1 }}"
+      - condition: state
+        entity_id: binary_sensor.home_assistant_update_available
+        state: "on"
+    actions:
+      - action: notify.mobile_app_resident_1_phone
+        data:
+          title: Home Assistant update available
+          message: >-
+            {{ states('sensor.home_assistant_version_docker_hub') }} is out (you have
+            {{ states('sensor.home_assistant_version_current_version') }}). To update, run:
+            cd ~/homeassistant && sudo docker compose pull && sudo docker compose up -d

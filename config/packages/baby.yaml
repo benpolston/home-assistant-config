@@ -1,0 +1,245 @@
+# Infant care tracker (generic; no personal data in config): one-tap "Fed" / "Diaper" logging with time-since display, daily counts,
+# multi-step undo, double-tap protection, reset, and an optional feeding reminder.
+# Everything stays local in HA. Timestamps are epoch seconds; 0 means "never".
+
+input_datetime:
+  baby_due_date:
+    name: Baby due date
+    has_date: true
+    has_time: false
+    icon: mdi:calendar-heart
+  baby_last_feed:
+    name: Baby – last feed
+    has_date: true
+    has_time: true
+    icon: mdi:baby-bottle-outline
+  baby_last_diaper:
+    name: Baby – last diaper
+    has_date: true
+    has_time: true
+    icon: mdi:human-baby-changing-table
+
+input_text:
+  # Earlier entries, newest first, comma-separated epoch seconds (for multi-step undo; ~20 kept)
+  baby_feed_history:
+    name: Baby – feed history
+    max: 255
+  baby_diaper_history:
+    name: Baby – diaper history
+    max: 255
+
+counter:
+  baby_feeds_today:
+    name: Feeds today
+    icon: mdi:baby-bottle-outline
+    minimum: 0
+    step: 1
+  baby_diapers_today:
+    name: Diapers today
+    icon: mdi:human-baby-changing-table
+    minimum: 0
+    step: 1
+
+input_boolean:
+  baby_feed_reminders:
+    name: Feeding reminders
+    icon: mdi:bell-ring-outline
+
+input_number:
+  baby_feed_interval_hours:
+    name: Remind after
+    icon: mdi:timer-sand
+    min: 1
+    max: 6
+    step: 0.5
+    unit_of_measurement: h
+    mode: slider
+
+template:
+  - sensor:
+      # Due-date countdown: "208 days to go" (attrs: weeks/days, pregnancy week assuming a 40-week due date)
+      - name: Baby countdown
+        unique_id: baby_countdown
+        icon: mdi:baby-carriage
+        state: >-
+          {% set d = states('input_datetime.baby_due_date') %}
+          {% if d in ['unknown', 'unavailable', ''] %}Due date not set{% else %}
+            {% set left = (as_datetime(d).date() - now().date()).days %}
+            {% if left > 1 %}{{ left }} days to go{% elif left == 1 %}Due tomorrow!{% elif left == 0 %}Due today!{% else %}{{ -left }} days past due{% endif %}
+          {% endif %}
+        attributes:
+          days_left: >-
+            {% set d = states('input_datetime.baby_due_date') %}
+            {{ (as_datetime(d).date() - now().date()).days if d not in ['unknown', 'unavailable', ''] else none }}
+          pregnancy_week: >-
+            {% set d = states('input_datetime.baby_due_date') %}
+            {% if d not in ['unknown', 'unavailable', ''] %}
+              {% set ga = 280 - (as_datetime(d).date() - now().date()).days %}
+              Week {{ ga // 7 }}{{ (' + ' ~ (ga % 7) ~ ' d') if ga % 7 else '' }}
+            {% endif %}
+          weeks_to_go: >-
+            {% set d = states('input_datetime.baby_due_date') %}
+            {% if d not in ['unknown', 'unavailable', ''] %}{% set l = (as_datetime(d).date() - now().date()).days %}{{ l // 7 }} weeks {{ l % 7 }} days{% endif %}
+      # "Just now" / "42 min ago" / "2 h 15 min ago" / "Not logged yet". Re-renders every minute.
+      - name: Baby since last feed
+        unique_id: baby_since_last_feed
+        icon: mdi:baby-bottle-outline
+        state: >-
+          {% set ts = state_attr('input_datetime.baby_last_feed', 'timestamp') | float(0) %}
+          {% if ts < 1000000 %}Not logged yet{% else %}
+            {% set m = ((now().timestamp() - ts) / 60) | int %}
+            {% if m < 1 %}Just now{% elif m < 60 %}{{ m }} min ago{% else %}{{ m // 60 }} h {{ m % 60 }} min ago{% endif %}
+          {% endif %}
+        attributes:
+          at: >-
+            {% set ts = state_attr('input_datetime.baby_last_feed', 'timestamp') | float(0) %}
+            {{ ts | timestamp_custom('%-I:%M %p') if ts >= 1000000 else '' }}
+      - name: Baby since last diaper
+        unique_id: baby_since_last_diaper
+        icon: mdi:human-baby-changing-table
+        state: >-
+          {% set ts = state_attr('input_datetime.baby_last_diaper', 'timestamp') | float(0) %}
+          {% if ts < 1000000 %}Not logged yet{% else %}
+            {% set m = ((now().timestamp() - ts) / 60) | int %}
+            {% if m < 1 %}Just now{% elif m < 60 %}{{ m }} min ago{% else %}{{ m // 60 }} h {{ m % 60 }} min ago{% endif %}
+          {% endif %}
+        attributes:
+          at: >-
+            {% set ts = state_attr('input_datetime.baby_last_diaper', 'timestamp') | float(0) %}
+            {{ ts | timestamp_custom('%-I:%M %p') if ts >= 1000000 else '' }}
+
+script:
+  # ---- generic implementations (kind: feed | diaper) ----
+  baby_log:
+    alias: Baby – log entry
+    mode: queued
+    fields:
+      kind: {description: "feed or diaper", required: true, example: feed}
+    variables:
+      last_e: "input_datetime.baby_last_{{ kind }}"
+      hist_e: "input_text.baby_{{ kind }}_history"
+      count_e: "counter.baby_{{ kind }}s_today"
+      last_ts: "{{ state_attr(last_e, 'timestamp') | float(0) | int }}"
+    sequence:
+      # Double-tap protection: ignore a second log within 2 minutes
+      - condition: template
+        value_template: "{{ last_ts < 1000000 or (now().timestamp() - last_ts) >= 120 }}"
+      - if: "{{ last_ts >= 1000000 }}"
+        then:
+          - action: input_text.set_value
+            target: {entity_id: "{{ hist_e }}"}
+            data:
+              value: >-
+                {% set old = states(hist_e).split(',') | reject('in', ['', 'unknown', 'unavailable']) | list %}
+                {{ ([last_ts | string] + old)[:20] | join(',') }}
+      - action: input_datetime.set_datetime
+        target: {entity_id: "{{ last_e }}"}
+        data:
+          timestamp: "{{ now().timestamp() | int }}"
+      - action: counter.increment
+        target: {entity_id: "{{ count_e }}"}
+
+  baby_undo:
+    alias: Baby – undo last entry
+    mode: queued
+    fields:
+      kind: {description: "feed or diaper", required: true, example: feed}
+    variables:
+      last_e: "input_datetime.baby_last_{{ kind }}"
+      hist_e: "input_text.baby_{{ kind }}_history"
+      count_e: "counter.baby_{{ kind }}s_today"
+      last_ts: "{{ state_attr(last_e, 'timestamp') | float(0) | int }}"
+      hist: "{{ states(hist_e).split(',') | reject('in', ['', 'unknown', 'unavailable']) | list }}"
+    sequence:
+      - condition: template
+        value_template: "{{ last_ts >= 1000000 }}"   # nothing to undo
+      # The undone entry counted toward today only if it was logged today
+      - if: "{{ last_ts >= today_at('00:00').timestamp() }}"
+        then:
+          - action: counter.decrement
+            target: {entity_id: "{{ count_e }}"}
+      - action: input_datetime.set_datetime
+        target: {entity_id: "{{ last_e }}"}
+        data:
+          timestamp: "{{ (hist[0] | int(0)) if hist | count > 0 else 0 }}"
+      - action: input_text.set_value
+        target: {entity_id: "{{ hist_e }}"}
+        data:
+          value: "{{ hist[1:] | join(',') }}"
+
+  baby_reset:
+    alias: Reset baby tracker
+    icon: mdi:restart
+    description: Clears all feed/diaper times, history and today's counts.
+    mode: single
+    sequence:
+      - action: input_datetime.set_datetime
+        target: {entity_id: [input_datetime.baby_last_feed, input_datetime.baby_last_diaper]}
+        data:
+          timestamp: 0
+      - action: input_text.set_value
+        target: {entity_id: [input_text.baby_feed_history, input_text.baby_diaper_history]}
+        data:
+          value: ""
+      - action: counter.reset
+        target: {entity_id: [counter.baby_feeds_today, counter.baby_diapers_today]}
+
+  # ---- friendly wrappers (dashboards, Gemini) ----
+  baby_log_feed:
+    alias: Log feed
+    icon: mdi:baby-bottle-outline
+    sequence:
+      - action: script.baby_log
+        data: {kind: feed}
+  baby_undo_feed:
+    alias: Undo last feed
+    icon: mdi:undo
+    sequence:
+      - action: script.baby_undo
+        data: {kind: feed}
+  baby_log_diaper:
+    alias: Log diaper
+    icon: mdi:human-baby-changing-table
+    sequence:
+      - action: script.baby_log
+        data: {kind: diaper}
+  baby_undo_diaper:
+    alias: Undo last diaper
+    icon: mdi:undo
+    sequence:
+      - action: script.baby_undo
+        data: {kind: diaper}
+
+automation:
+  - id: baby_counters_midnight_reset
+    alias: Baby – reset daily counts at midnight
+    mode: single
+    triggers:
+      - trigger: time
+        at: "00:00:00"
+    actions:
+      - action: counter.reset
+        target:
+          entity_id: [counter.baby_feeds_today, counter.baby_diapers_today]
+
+  - id: baby_feed_reminder
+    alias: Baby – feeding reminder
+    description: Push to both phones once when the time since the last feed passes the reminder interval.
+    mode: single
+    triggers:
+      # Template trigger re-evaluates every minute (uses now()) and fires once when it turns true
+      - trigger: template
+        value_template: >-
+          {% set ts = state_attr('input_datetime.baby_last_feed', 'timestamp') | float(0) %}
+          {{ ts >= 1000000 and (now().timestamp() - ts) >= states('input_number.baby_feed_interval_hours') | float(3) * 3600 }}
+    conditions:
+      - condition: state
+        entity_id: input_boolean.baby_feed_reminders
+        state: "on"
+    actions:
+      - action: script.notify_phones
+        data:
+          title: Feeding time?
+          message: >-
+            Last feed was {{ states('sensor.baby_since_last_feed') }}
+            ({{ state_attr('sensor.baby_since_last_feed', 'at') }}).

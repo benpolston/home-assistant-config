@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Rebuild dashboards/*.json and push them to HA (overwrites UI edits on those dashboards).
+cd "$(dirname "$0")/.." || exit 1
+python3 -I dashboards/build.py
+CMDS=$(python3 -c '
+import json
+m=json.load(open("dashboards/main.json")); t=json.load(open("dashboards/tablet.json"))
+print(json.dumps([{"type":"lovelace/config/save","url_path":"dashboard-home","config":m},
+                  {"type":"lovelace/config/save","url_path":"dashboard-tablet","config":t}]))')
+tools/ws "$CMDS" | python3 -c 'import json,sys;[print(json.loads(l)["cmd"],json.loads(l)["success"],json.loads(l)["error"]) for l in sys.stdin]'

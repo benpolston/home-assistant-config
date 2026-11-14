@@ -1,0 +1,69 @@
+# Helpers used by the automations, scripts and dashboards.
+
+input_boolean:
+  guest_mode:
+    # "Guest staying": while on, the Everyone-away automation is skipped
+    # so a guest isn't left with lights, TV and heater switched off.
+    name: Guest staying
+    icon: mdi:account-heart
+  movie_mode_active:
+    name: Movie mode active
+    icon: mdi:movie-open
+  goodnight_active:
+    # On after the Goodnight script runs. While on, Jellyfin movie mode leaves the lights alone
+    # (no movie scene on play, no brighten on pause, no restore at the end). Cleared by any
+    # living-room look (Movie/Gaming/Relax/Bright/Good Morning) or at goodnight_reset_time (automation goodnight_clear).
+    name: Goodnight active
+    icon: mdi:weather-night
+  night_feed:
+    name: Night feed
+    icon: mdi:baby-bottle-outline
+
+input_text:
+  movie_mode_jellyfin_device:
+    # Substring matched (case-insensitive) against Jellyfin session device names.
+    # After the first playback on the living room TV, check the Jellyfin media_player
+    # entity's device name and set this to match it (e.g. "Samsung" or "Tizen").
+    name: Movie mode – Jellyfin device match
+    initial: samsung
+    max: 64
+  notify_targets:
+    # Comma-separated mobile_app notify services, filled in once the iPhones register,
+    # e.g. "mobile_app_resident_1_phone,mobile_app_resident_2_phone"
+    name: Phone notify targets
+    max: 255
+  movie_restore_on:
+    # Comma-separated lights that were ON when movie mode started (so the restore can power
+    # them back on first — Govee ignores brightness/color commands sent to an off bulb).
+    name: Movie restore – lights that were on
+    max: 255
+
+# Household schedule lives in helpers (set in the UI), not hard-coded in automations.
+input_datetime:
+  quiet_hours_start:
+    name: Quiet hours start
+    has_date: false
+    has_time: true
+  quiet_hours_end:
+    name: Quiet hours end
+    has_date: false
+    has_time: true
+  goodnight_reset_time:
+    name: Goodnight auto-clear time
+    has_date: false
+    has_time: true
+  evening_reminder_time:
+    name: Evening reminder time
+    has_date: false
+    has_time: true
+
+input_number:
+  heater_max_hours:
+    # Living room heater auto-off after this many continuous hours (automation heater_max_runtime)
+    name: Heater max runtime
+    icon: mdi:timer-alert
+    min: 1
+    max: 12
+    step: 1
+    unit_of_measurement: h
+    mode: slider

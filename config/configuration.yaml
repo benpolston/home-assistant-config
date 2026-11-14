@@ -1,0 +1,23 @@
+# Home Assistant configuration — managed in git. See README.md.
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+homeassistant:
+  # Everything household-specific lives in packages/ (helpers, sensors, groups, WoL, Emulated Hue)
+  packages: !include_dir_named packages
+
+frontend:
+  themes: !include_dir_merge_named themes
+
+# http: settings are NOT read from YAML in HA 2026.x. They live in .storage/http and are changed with
+# the WebSocket commands http/config/configure + http/config/promote (Settings > System > Network in the UI).
+# Current: ip_ban_enabled true, login_attempts_threshold 5, use_x_forwarded_for true,
+# trusted_proxies [127.0.0.1, ::1] (for Tailscale Serve).
+
+# UI-created items keep working (automations.yaml / scenes.yaml); YAML-managed ones live in the dirs.
+automation ui: !include automations.yaml
+automation manual: !include_dir_merge_list automations/
+script: !include_dir_merge_named scripts/
+scene ui: !include scenes.yaml
+scene manual: !include_dir_merge_list scenes/

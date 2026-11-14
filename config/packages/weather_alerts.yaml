@@ -1,0 +1,189 @@
+# NWS weather alerts for the home location (added 2026-11-08).
+# Source: api.weather.gov/alerts/active?point=<zone.home>, polled every 2 minutes (free, no key).
+# HA's core NWS integration only does forecasts, hence the direct API call.
+#
+# Tiers (everything goes by NWS severity/type):
+#   critical  severity Extreme, or Tornado Warning → Critical Alert (sounds even on silent/Focus) to both
+#             phones + Echo announcement even in quiet hours
+#   warning   any other "... Warning" → time-sensitive push to both phones + Echo (quiet hours respected),
+#             plus an "ended" push when it expires/cancels
+#   watch     "... Watch" → normal push (silent "passive" delivery during quiet hours)
+#   advisory  advisories, statements, everything else → dashboard chip only
+# Re-pushes happen only when a new event TYPE appears (NWS re-issues updates with new IDs).
+
+rest_command:
+  nws_alerts:
+    url: >-
+      https://api.weather.gov/alerts/active?status=actual&point={{ '%.4f' % state_attr('zone.home', 'latitude') }},{{ '%.4f' % state_attr('zone.home', 'longitude') }}
+    method: get
+    headers:
+      User-Agent: HomeAssistant-home-weather-alerts
+      Accept: application/geo+json
+    timeout: 20
+
+template:
+  - triggers:
+      - trigger: time_pattern
+        minutes: "/2"
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: rest_command.nws_alerts
+        response_variable: nws
+        continue_on_error: true
+    sensor:
+      - name: Weather alerts
+        unique_id: weather_alerts
+        icon: mdi:weather-lightning-rainy
+        # State = the most important active alert ("Winter Storm Warning +1") or "none".
+        # On a failed fetch, keep the previous state/attributes (attr last_ok stops advancing).
+        state: >-
+          {% set ok = nws is defined and nws.status is defined and nws.status == 200 %}
+          {% if not ok %}{{ this.state if this.state not in ['unknown', 'unavailable'] else 'none' }}
+          {% else %}
+            {% set c = nws.content if nws.content is mapping else (nws.content | from_json) %}
+            {% set ns = namespace(best='', rank=0, n=0) %}
+            {% for f in c.features if f.properties.messageType != 'Cancel' %}
+              {% set p = f.properties %}
+              {% set r = 4 if (p.severity == 'Extreme' or p.event == 'Tornado Warning') else 3 if p.event.endswith('Warning')
+                         else 2 if p.event.endswith('Watch') else 1 %}
+              {% set ns.n = ns.n + 1 %}
+              {% if r > ns.rank %}{% set ns.rank = r %}{% set ns.best = p.event %}{% endif %}
+            {% endfor %}
+            {{ 'none' if ns.n == 0 else ns.best ~ ((' +' ~ (ns.n - 1)) if ns.n > 1 else '') }}
+          {% endif %}
+        attributes:
+          alerts: >-
+            {% set ok = nws is defined and nws.status is defined and nws.status == 200 %}
+            {% if not ok %}{{ this.attributes.alerts | default([]) }}
+            {% else %}
+              {% set c = nws.content if nws.content is mapping else (nws.content | from_json) %}
+              {% set ns = namespace(out=[]) %}
+              {% for f in c.features if f.properties.messageType != 'Cancel' %}
+                {% set p = f.properties %}
+                {% set tier = 'critical' if (p.severity == 'Extreme' or p.event == 'Tornado Warning') else 'warning' if p.event.endswith('Warning')
+                              else 'watch' if p.event.endswith('Watch') else 'advisory' %}
+                {% set ns.out = ns.out + [{'event': p.event, 'tier': tier, 'severity': p.severity,
+                                            'headline': p.headline, 'ends': p.ends or p.expires,
+                                            'instruction': (p.instruction or '')[:300]}] %}
+              {% endfor %}
+              {{ ns.out }}
+            {% endif %}
+          level: >-
+            {% set ok = nws is defined and nws.status is defined and nws.status == 200 %}
+            {% if not ok %}{{ this.attributes.level | default('none') }}
+            {% else %}
+              {% set c = nws.content if nws.content is mapping else (nws.content | from_json) %}
+              {% set ns = namespace(rank=0) %}
+              {% for f in c.features if f.properties.messageType != 'Cancel' %}
+                {% set p = f.properties %}
+                {% set r = 4 if (p.severity == 'Extreme' or p.event == 'Tornado Warning') else 3 if p.event.endswith('Warning')
+                           else 2 if p.event.endswith('Watch') else 1 %}
+                {% if r > ns.rank %}{% set ns.rank = r %}{% endif %}
+              {% endfor %}
+              {{ ['none', 'advisory', 'watch', 'warning', 'critical'][ns.rank] }}
+            {% endif %}
+          last_ok: >-
+            {% set ok = nws is defined and nws.status is defined and nws.status == 200 %}
+            {{ now().isoformat() if ok else this.attributes.last_ok | default(none) }}
+
+  - sensor:
+      # Plain level sensor so dashboard chips can show/hide and colour by it
+      - name: Weather alert level
+        unique_id: weather_alert_level
+        icon: mdi:alert-octagon
+        state: "{{ state_attr('sensor.weather_alerts', 'level') | default('none', true) }}"
+
+script:
+  weather_alert_push:
+    alias: Weather alert – push
+    icon: mdi:weather-lightning-rainy
+    description: Sends one weather alert (or its all-clear) at the right urgency. Used by weather_alert_notify; callable for tests.
+    mode: queued
+    fields:
+      alert: {description: "Alert dict: event, tier, headline, ends, instruction", required: true}
+      ended: {description: "Send the 'has ended' message instead", example: false}
+      admin_only: {description: "Only the admin's phone and no Echo (for tests)", example: false}
+    sequence:
+      - variables:
+          tier: "{{ alert.tier }}"
+          quiet: "{% set s = today_at(states('input_datetime.quiet_hours_start')) %}{% set e = today_at(states('input_datetime.quiet_hours_end')) %}{{ (now() >= s or now() < e) if s > e else (s <= now() < e) }}"
+          is_ended: "{{ ended | default(false) | bool }}"
+          ends_txt: >-
+            {% set e = as_datetime(alert.ends) if alert.ends else none %}
+            {{ ('until ' ~ (as_local(e).strftime('%-I:%M %p') if as_local(e).date() == now().date()
+                else as_local(e).strftime('%a %-I:%M %p'))) if e else '' }}
+          title: >-
+            {% if is_ended %}✅ {{ alert.event }} ended
+            {% elif tier == 'critical' %}🚨 {{ alert.event }}
+            {% elif tier == 'warning' %}⚠️ {{ alert.event }}
+            {% else %}🌦️ {{ alert.event }}{% endif %}
+          message: >-
+            {% if is_ended %}The {{ alert.event }} for home is no longer in effect.
+            {% else %}{{ alert.event }}{{ (' ' ~ ends_txt) if ends_txt else '' }}.{{ (' ' ~ alert.instruction) if alert.instruction and tier in ['critical', 'warning'] else '' }}{% endif %}
+          push: >-
+            {% if is_ended %}{{ {'interruption-level': 'passive' if quiet else 'active'} }}
+            {% elif tier == 'critical' %}{{ {'interruption-level': 'critical', 'sound': {'name': 'default', 'critical': 1, 'volume': 1.0}} }}
+            {% elif tier == 'warning' %}{{ {'interruption-level': 'time-sensitive'} }}
+            {% else %}{{ {'interruption-level': 'passive' if quiet else 'active'} }}{% endif %}
+          data: >-
+            {{ {'group': 'weather', 'push': push,
+                'url': 'https://forecast.weather.gov/MapClick.php?lat=' ~ ('%.4f' % state_attr('zone.home', 'latitude'))
+                       ~ '&lon=' ~ ('%.4f' % state_attr('zone.home', 'longitude'))} }}
+      - if: "{{ admin_only | default(false) | bool }}"
+        then:
+          - action: notify.mobile_app_resident_1_phone
+            data: {title: "{{ title }}", message: "{{ message }}", data: "{{ data }}"}
+        else:
+          - action: script.notify_phones
+            data: {title: "{{ title }}", message: "{{ message }}", data: "{{ data }}"}
+          - if: "{{ not is_ended and tier in ['critical', 'warning'] }}"
+            then:
+              - action: script.announce_echos
+                continue_on_error: true
+                data:
+                  message: "Weather alert: {{ alert.event }}{{ (' ' ~ ends_txt) if ends_txt else '' }}."
+                  force: "{{ tier == 'critical' }}"
+
+automation:
+  - id: weather_alert_notify
+    alias: Weather alerts – notify
+    description: New NWS alert type for home → push by tier (see package header); warnings also get an all-clear.
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: state
+        entity_id: sensor.weather_alerts
+        attribute: alerts
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.from_state is not none and trigger.to_state is not none
+             and trigger.from_state.state not in ['unknown', 'unavailable']
+             and trigger.to_state.state not in ['unknown', 'unavailable'] }}
+    actions:
+      - variables:
+          old: "{{ trigger.from_state.attributes.alerts | default([], true) }}"
+          new: "{{ trigger.to_state.attributes.alerts | default([], true) }}"
+          old_events: "{{ old | map(attribute='event') | list }}"
+          new_events: "{{ new | map(attribute='event') | list }}"
+          started: >-
+            {% set ns = namespace(l=[], seen=[]) %}
+            {% for a in new if a.event not in old_events and a.event not in ns.seen and a.tier != 'advisory' %}
+              {% set ns.l = ns.l + [a] %}{% set ns.seen = ns.seen + [a.event] %}
+            {% endfor %}{{ ns.l }}
+          finished: >-
+            {% set ns = namespace(l=[], seen=[]) %}
+            {% for a in old if a.event not in new_events and a.event not in ns.seen and a.tier in ['critical', 'warning'] %}
+              {% set ns.l = ns.l + [a] %}{% set ns.seen = ns.seen + [a.event] %}
+            {% endfor %}{{ ns.l }}
+      - repeat:
+          for_each: "{{ started }}"
+          sequence:
+            - action: script.weather_alert_push
+              data: {alert: "{{ repeat.item }}"}
+      - repeat:
+          for_each: "{{ finished }}"
+          sequence:
+            - action: script.weather_alert_push
+              data: {alert: "{{ repeat.item }}", ended: true}

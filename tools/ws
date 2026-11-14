@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Usage: tools/ws '[{"type":"get_config"}]'   (token from .secrets/ha_token, or .secrets/.short_at during setup)
+cd "$(dirname "$0")/.." || exit 1
+T=$(cat .secrets/ha_token 2>/dev/null || cat .secrets/.short_at)
+sudo docker exec -i -e HA_TOKEN="$T" -e HA_CMDS="$1" homeassistant python - < tools/ha_ws.py
